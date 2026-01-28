@@ -44,12 +44,7 @@ impl ZjSm {
     fn handle_pipe(&mut self, pipe_message: PipeMessage) {
         log!("{:?}", pipe_message);
         match pipe_message.source {
-            PipeSource::Cli(ref s) => {
-                log!("Got message from cli: {}", s);
-                log!("{:?}", pipe_message);
-            }
-            PipeSource::Plugin(_) => {}
-            PipeSource::Keybind => {
+            PipeSource::Cli(_) | PipeSource::Keybind => {
                 if pipe_message.name == PIPE_NAME {
                     if let Some(payload) = pipe_message.payload {
                         match payload.as_str() {
@@ -68,6 +63,7 @@ impl ZjSm {
                     log!("Unknown pipe!");
                 }
             }
+            PipeSource::Plugin(_) => {}
         }
     }
 
@@ -80,16 +76,10 @@ impl ZjSm {
                     .find(|s| s.is_current_session)
                     .map(|session_info| session_info.name)
                     .expect("Should be able to find current session");
-                while !self.cached_pipe_msgs.is_empty() {
-                    log!("Cache Size: {}", self.cached_pipe_msgs.len());
-                    if let Some(pipe_message) = self.cached_pipe_msgs.pop() {
-                        self.handle_pipe(pipe_message);
-                    }
-                }
             }
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 if !self.got_permission {
-                    log!("Got permissions!");
+                    log!("Got permissions inside handler!");
                     self.got_permission = true;
                 }
             }
@@ -145,6 +135,7 @@ impl ZellijPlugin for ZjSm {
     }
     fn update(&mut self, event: Event) -> bool {
         if let Event::PermissionRequestResult(PermissionStatus::Granted) = event {
+            log!("Got permissions!");
             self.got_permission = true;
 
             while !self.pending_events.is_empty() {
@@ -164,9 +155,23 @@ impl ZellijPlugin for ZjSm {
         self.handle_event(event)
     }
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
-        log!("{:?}", pipe_message);
-        self.cached_pipe_msgs.push(pipe_message);
-        log!("{:?}", &self.cached_pipe_msgs);
+        log!("Recieved: {:?}", pipe_message);
+        if !self.got_permission || self.sessions.is_empty() {
+            log!(
+                "Permissions: {}, SessionList empty: {}. Caching pipe messages",
+                self.got_permission,
+                self.sessions.is_empty()
+            );
+            self.cached_pipe_msgs.push(pipe_message);
+            return false;
+        } else {
+            while !self.cached_pipe_msgs.is_empty() {
+                if let Some(pipe_msg) = self.cached_pipe_msgs.pop() {
+                    self.handle_pipe(pipe_msg);
+                }
+            }
+        }
+        self.handle_pipe(pipe_message);
         false
     }
     fn render(&mut self, _rows: usize, _cols: usize) {}
