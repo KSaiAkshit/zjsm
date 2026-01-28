@@ -21,6 +21,8 @@ struct ZjSm {
     curr_session: String,
     sessions: Vec<String>,
     cached_pipe_msgs: Vec<PipeMessage>,
+    pending_events: Vec<Event>,
+    got_permission: bool,
 }
 
 impl Default for ZjSm {
@@ -30,16 +32,13 @@ impl Default for ZjSm {
             curr_session: Default::default(),
             sessions: Default::default(),
             cached_pipe_msgs: Default::default(),
+            pending_events: Default::default(),
+            got_permission: Default::default(),
         }
     }
 }
 
 register_plugin!(ZjSm);
-
-fn close() {
-    log!("Closing plugin");
-    close_self();
-}
 
 impl ZjSm {
     fn handle_pipe(&mut self, pipe_message: PipeMessage) {
@@ -70,7 +69,35 @@ impl ZjSm {
                 }
             }
         }
-        close();
+    }
+
+    fn handle_event(&mut self, event: Event) -> bool {
+        match event {
+            Event::SessionUpdate(session_infos, _) => {
+                self.sessions = session_infos.iter().map(|s| s.name.clone()).collect();
+                self.curr_session = session_infos
+                    .into_iter()
+                    .find(|s| s.is_current_session)
+                    .map(|session_info| session_info.name)
+                    .expect("Should be able to find current session");
+                while !self.cached_pipe_msgs.is_empty() {
+                    log!("Cache Size: {}", self.cached_pipe_msgs.len());
+                    if let Some(pipe_message) = self.cached_pipe_msgs.pop() {
+                        self.handle_pipe(pipe_message);
+                    }
+                }
+            }
+            Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                if !self.got_permission {
+                    log!("Got permissions!");
+                    self.got_permission = true;
+                }
+            }
+            e => {
+                log!("Not interested in event: {:?}", e);
+            }
+        }
+        false
     }
 
     fn switch_session(&self, forward: bool) -> anyhow::Result<()> {
@@ -105,34 +132,36 @@ impl ZjSm {
 
 impl ZellijPlugin for ZjSm {
     fn load(&mut self, _configuration: BTreeMap<String, String>) {
-        let events = [EventType::SessionUpdate];
+        let events = [EventType::SessionUpdate, EventType::PermissionRequestResult];
         let permissions = [
             PermissionType::ReadApplicationState,
             PermissionType::ReadCliPipes,
             PermissionType::ChangeApplicationState,
         ];
+        log!("Requesting permissions for: {:?}", permissions);
         request_permission(&permissions);
+        log!("Subcribing events: {:?}", events);
         subscribe(&events);
     }
     fn update(&mut self, event: Event) -> bool {
-        match event {
-            Event::SessionUpdate(session_infos, _) => {
-                self.sessions = session_infos.iter().map(|s| s.name.clone()).collect();
-                self.curr_session = session_infos
-                    .into_iter()
-                    .find(|s| s.is_current_session)
-                    .map(|session_info| session_info.name)
-                    .expect("Should be able to find current session");
-                while !self.cached_pipe_msgs.is_empty() {
-                    log!("Cache Size: {}", self.cached_pipe_msgs.len());
-                    if let Some(pipe_message) = self.cached_pipe_msgs.pop() {
-                        self.handle_pipe(pipe_message);
-                    }
+        if let Event::PermissionRequestResult(PermissionStatus::Granted) = event {
+            self.got_permission = true;
+
+            while !self.pending_events.is_empty() {
+                if let Some(ev) = self.pending_events.pop() {
+                    self.handle_event(ev);
                 }
             }
-            _ => todo!(),
         }
-        false
+        if !self.got_permission {
+            self.pending_events.push(event);
+            log!(
+                "Haven't gotten permission yet! Pending event: {}",
+                self.pending_events.len()
+            );
+            return false;
+        }
+        self.handle_event(event)
     }
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
         log!("{:?}", pipe_message);
