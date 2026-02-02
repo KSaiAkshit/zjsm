@@ -20,7 +20,7 @@ macro_rules! log{
 struct ZjSm {
     curr_session: String,
     sessions: Vec<String>,
-    cached_pipe_msgs: Vec<PipeMessage>,
+    cached_pipe_msg: Option<PipeMessage>,
     pending_events: Vec<Event>,
     got_permission: bool,
 }
@@ -31,7 +31,7 @@ impl Default for ZjSm {
         Self {
             curr_session: Default::default(),
             sessions: Default::default(),
-            cached_pipe_msgs: Default::default(),
+            cached_pipe_msg: Default::default(),
             pending_events: Default::default(),
             got_permission: Default::default(),
         }
@@ -76,6 +76,11 @@ impl ZjSm {
                     .find(|s| s.is_current_session)
                     .map(|session_info| session_info.name)
                     .expect("Should be able to find current session");
+                if let Some(pipe_msg) = &self.cached_pipe_msg {
+                    log!("Handling cached message");
+                    self.handle_pipe(pipe_msg.clone());
+                    self.cached_pipe_msg = None;
+                }
             }
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 if !self.got_permission {
@@ -162,14 +167,13 @@ impl ZellijPlugin for ZjSm {
                 self.got_permission,
                 self.sessions.is_empty()
             );
-            self.cached_pipe_msgs.push(pipe_message);
+            self.cached_pipe_msg = Some(pipe_message);
             return false;
-        } else {
-            while !self.cached_pipe_msgs.is_empty() {
-                if let Some(pipe_msg) = self.cached_pipe_msgs.pop() {
-                    self.handle_pipe(pipe_msg);
-                }
-            }
+        }
+        if let Some(pipe_msg) = &self.cached_pipe_msg {
+            self.handle_pipe(pipe_msg.clone());
+            log!("Handling cached message");
+            self.cached_pipe_msg = None;
         }
         self.handle_pipe(pipe_message);
         false
